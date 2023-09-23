@@ -87,7 +87,6 @@ fn select(input: &str) -> nom::IResult<&str, Operation> {
     let (input, _) = space0(input)?;
     // consume any newlines
     let (input, _) = line_ending(input)?;
-    println!("input: {}", input.len());
     match input.len() {
         0 => Ok((input, Operation::Select(key.to_string()))),
         _ => Err(nom::Err::Error(nom::error::Error::new(input, nom::error::ErrorKind::Eof))),

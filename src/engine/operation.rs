@@ -14,3 +14,13 @@ impl Display for Operation {
         }
     }
 }
+
+// implement a trait for Operation that shows how many bytes it takes up
+impl Operation {
+    pub fn size_bytes(&self) -> usize {
+        match self {
+            Operation::Insert(value) => value.len(),
+            Operation::Delete => 0,
+        }
+    }
+}

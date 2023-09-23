@@ -14,6 +14,7 @@ pub struct Database {
     wal: Wal,
     memtable: MemTable,
     sstables: Vec<SSTable>,
+    sstable_compaction_threshold: usize,
     pub data_dir: String,
 }
 
@@ -27,6 +28,7 @@ impl Database {
             wal: Wal::new(&wal_path),
             memtable: MemTable::new(),
             sstables: Vec::new(),
+            sstable_compaction_threshold: 10,
             data_dir: data_dir.to_string(),
         }
     }
@@ -42,6 +44,9 @@ impl Database {
     /// Inserts a key-value pair into the MemTable.
     pub fn set(&mut self, key: String, value: String) {
         self.memtable.set(key, value, &mut self.wal);
+        if self.memtable.is_full() {
+            self.flush_memtable_to_sstable().unwrap();
+        }
     }
 
     pub fn flush_memtable_to_sstable(&mut self) -> Result<()> {
@@ -74,6 +79,10 @@ impl Database {
         // Add the SSTable to the list of SSTables managed by this Database instance
         self.sstables.push(sstable);
 
+        if self.sstables.len() >= self.sstable_compaction_threshold {
+            self.compact_sstables()?;
+        }
+
         // Clear the MemTable
         self.memtable.clear(&mut self.wal)?;
 
@@ -91,6 +100,9 @@ impl Database {
 
     pub fn delete(&mut self, key: &String) {
         self.memtable.delete(key, &mut self.wal);
+        if self.memtable.is_full() {
+            self.flush_memtable_to_sstable().unwrap();
+        }
     }
 
     pub fn delete_sstables(&mut self) -> Result<()> {
@@ -106,6 +118,8 @@ impl Database {
     // Merge old SSTables into a new SSTable to reduce the number of SSTables
     // and improve read performance + reduce disk space usage.
     pub fn compact_sstables(&mut self) -> Result<()> {
+        // time how much compaction takes
+        let start = std::time::Instant::now();
         let uuid = Uuid::new_v4();
         let sstable_path = format!("{}/sstable_{}_{}", self.data_dir, self.sstables.len(), uuid);
         let mut new_sstable = SSTable::new(sstable_path.as_str())?;
@@ -206,6 +220,10 @@ impl Database {
             std::fs::remove_file(path).unwrap_or(());
         }
         self.sstables.push(new_sstable);
+
+        let end = std::time::Instant::now();
+
+        println!("Compaction took {}ms", (end - start).as_millis());
 
         Ok(())
     }

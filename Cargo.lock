@@ -93,6 +93,7 @@ name = "kassantra"
 version = "0.1.0"
 dependencies = [
  "nom",
+ "rand",
  "tokio",
  "uuid",
 ]
