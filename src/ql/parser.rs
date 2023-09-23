@@ -1,4 +1,8 @@
-use nom::{self, bytes::complete::{self, tag}, character::complete::{space1, space0, line_ending}, branch, sequence::delimited};
+use nom::{
+    self, branch,
+    bytes::complete::{self, tag},
+    character::complete::{line_ending, space0, space1},
+};
 
 // This is going to be a toy version of CQL. All inserts and deletes will go to a table called 'the_table'.
 
@@ -12,7 +16,7 @@ pub enum Operation {
 // e.g. 'INSERT INTO the_table (key) VALUES ("foo")' / 'DELETE FROM the_table WHERE key = "foo"' / 'SELECT * FROM the_table WHERE key = "foo"'
 
 impl Operation {
-    pub fn from_str(input: &str) -> Result<(Operation), nom::Err<nom::error::Error<&str>>> {
+    pub fn from_str(input: &str) -> Result<Operation, nom::Err<nom::error::Error<&str>>> {
         let (_, operation) = branch::alt((insert, delete, select))(input)?;
         Ok(operation)
     }
@@ -41,7 +45,10 @@ fn insert(input: &str) -> nom::IResult<&str, Operation> {
     let (input, _) = line_ending(input)?;
     match input.len() {
         0 => Ok((input, Operation::Insert(key.to_string(), value.to_string()))),
-        _ => Err(nom::Err::Error(nom::error::Error::new(input, nom::error::ErrorKind::Eof))),
+        _ => Err(nom::Err::Error(nom::error::Error::new(
+            input,
+            nom::error::ErrorKind::Eof,
+        ))),
     }
 }
 
@@ -66,10 +73,13 @@ fn delete(input: &str) -> nom::IResult<&str, Operation> {
     let (input, _) = space0(input)?;
     // consume any newlines
     let (input, _) = line_ending(input)?;
-    
+
     match input.len() {
         0 => Ok((input, Operation::Delete(key.to_string()))),
-        _ => Err(nom::Err::Error(nom::error::Error::new(input, nom::error::ErrorKind::Eof))),
+        _ => Err(nom::Err::Error(nom::error::Error::new(
+            input,
+            nom::error::ErrorKind::Eof,
+        ))),
     }
 }
 
@@ -89,6 +99,9 @@ fn select(input: &str) -> nom::IResult<&str, Operation> {
     let (input, _) = line_ending(input)?;
     match input.len() {
         0 => Ok((input, Operation::Select(key.to_string()))),
-        _ => Err(nom::Err::Error(nom::error::Error::new(input, nom::error::ErrorKind::Eof))),
+        _ => Err(nom::Err::Error(nom::error::Error::new(
+            input,
+            nom::error::ErrorKind::Eof,
+        ))),
     }
 }

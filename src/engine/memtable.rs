@@ -1,7 +1,7 @@
+use super::operation::Operation;
+use super::wal::Wal;
 use std::collections::BTreeMap;
 use std::io::Result;
-use super::wal::Wal;
-use super::operation::Operation;
 
 pub struct MemTable {
     store: BTreeMap<String, Operation>,
@@ -13,7 +13,7 @@ impl MemTable {
     pub fn new() -> MemTable {
         MemTable {
             store: BTreeMap::new(),
-            flush_threshold_bytes: 1024, // 1KB just for testing
+            flush_threshold_bytes: 1024,
             size_bytes: 0,
         }
     }
@@ -37,7 +37,7 @@ impl MemTable {
             _ => (0, 0),
         };
 
-        let byte_diff = (key.len() as i64 - (existing_key_bytes + existing_value_bytes) as i64);
+        let byte_diff = key.len() as i64 - (existing_key_bytes + existing_value_bytes) as i64;
         self.store.insert(key.clone(), Operation::Delete);
         self.size_bytes += byte_diff;
     }
@@ -56,7 +56,8 @@ impl MemTable {
         };
 
         // Now insert the data into the MemTable
-        let byte_diff = (key.len() as i64 + value.len() as i64 - (existing_key_bytes + existing_value_bytes) as i64);
+        let byte_diff = key.len() as i64 + value.len() as i64
+            - (existing_key_bytes + existing_value_bytes) as i64;
         self.store.insert(key, Operation::Insert(value));
         self.size_bytes += byte_diff;
     }
@@ -77,7 +78,8 @@ impl MemTable {
             match operation {
                 "INSERT" => {
                     let value = parts.next().unwrap();
-                    self.store.insert(key.to_string(), Operation::Insert(value.to_string()));
+                    self.store
+                        .insert(key.to_string(), Operation::Insert(value.to_string()));
                 }
                 "DELETE" => {
                     self.store.remove(key);
@@ -85,7 +87,6 @@ impl MemTable {
                 _ => panic!("Unknown operation {}", operation),
             }
         }
-
     }
 
     pub fn clear(&mut self, wal: &mut Wal) -> Result<()> {
@@ -98,5 +99,4 @@ impl MemTable {
     pub fn iter(&self) -> std::collections::btree_map::Iter<String, Operation> {
         self.store.iter()
     }
-
 }
