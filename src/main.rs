@@ -26,10 +26,10 @@ fn ascii_letter_from_index(index: u8) -> char {
 
 async fn run_client() {
     let port_from_env = std::env::var("PORT").unwrap_or("8080".to_string());
+    let requests = Mutex::new(0);
+    let start_time = std::time::Instant::now();
     // loop and bombard the tcp server with requests
     loop {
-        // wait 10 milliseconds
-        tokio::time::sleep(Duration::from_millis(10)).await;
         let mut stream = TcpStream::connect(format!("127.0.0.1:{}", port_from_env)).await.unwrap();
         let mut random_number_generator = rand::thread_rng();
         let random_three_letter_key = format!("{}{}{}", 
@@ -50,6 +50,11 @@ async fn run_client() {
         let n = stream.read(&mut buf).await.unwrap();
         let buf_to_string = String::from_utf8(buf[0..n].to_vec()).unwrap();
         println!("Insert response: {}", buf_to_string);
+        let mut reqs = requests.lock().await;
+        *reqs += 1;
+        let cur_time = std::time::Instant::now();
+        let rps = *reqs as f64 / cur_time.duration_since(start_time).as_secs_f64();
+        println!("{} requests, {} rps", reqs, rps);
     }
 }
 
