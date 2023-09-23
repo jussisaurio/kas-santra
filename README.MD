@@ -18,7 +18,7 @@ Todo:
 - [ ] Implement a proper CQL query executor
 - [x] Implement automatic memtable flushing
 - [x] Implement automatic SSTable compaction
-- [ ] Improve compaction performance
+- [x] Improve compaction performance
 - [ ] Implement support for multiple columns instead of just a key-value pair
 - [ ] Implement support for multiple tables
 - [ ] Implement primary key support

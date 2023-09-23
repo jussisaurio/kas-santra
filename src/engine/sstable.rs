@@ -134,11 +134,14 @@ impl SSTable {
         self.file.write_all(&value_length.to_le_bytes())?;
         self.file.write_all(key.as_bytes())?;
         self.file.write_all(value.as_bytes())?;
-        self.file.sync_all()?;
 
         bytes_written += 4 + 4 + key_length as usize + value_length as usize;
 
         Ok(bytes_written)
+    }
+
+    pub fn sync(&mut self) -> Result<()> {
+        self.file.sync_all()
     }
 
     pub fn get_as_operations(&mut self) -> Result<Vec<(String, Operation)>> {
