@@ -7,17 +7,17 @@ use engine::operation::Operation;
 use engine::sstable::SSTable;
 use engine::wal::Wal;
 use priority_queue::PriorityQueue;
-use std::collections::{BTreeMap, HashSet, HashMap};
+use std::collections::HashSet;
 use std::io::Result;
+use std::sync::Arc;
+use tokio::sync::Mutex;
 use uuid::Uuid;
 
-use crate::engine::sstable;
-
 pub struct Database {
-    wal: Wal,
-    memtable: MemTable,
-    sstables: Vec<SSTable>,
-    sstable_compaction_threshold: usize,
+    pub wal: Arc<Mutex<Wal>>,
+    pub memtable: Arc<Mutex<MemTable>>,
+    pub sstables: Arc<Mutex<Vec<SSTable>>>,
+    pub sstable_compaction_threshold: usize,
     pub data_dir: String,
 }
 
@@ -28,45 +28,65 @@ impl Database {
         std::fs::create_dir_all(data_dir).unwrap_or(());
         let wal_path = format!("{}/wal_{}", data_dir, Uuid::new_v4());
         Self {
-            wal: Wal::new(&wal_path),
-            memtable: MemTable::new(),
-            sstables: Vec::new(),
+            wal: Arc::new(Mutex::new(Wal::new(wal_path.as_str()))),
+            memtable: Arc::new(Mutex::new(MemTable::new())),
+            sstables: Arc::new(Mutex::new(Vec::new())),
             sstable_compaction_threshold: 10,
             data_dir: data_dir.to_string(),
         }
     }
 
-    pub fn wal_path(&self) -> String {
-        self.wal.path()
-    }
-
-    pub fn get_sstable(&mut self, index: usize) -> Option<&mut SSTable> {
-        self.sstables.get_mut(index)
+    pub async fn wal_path(&self) -> String {
+        let foo = self.wal.lock().await;
+        foo.path()
     }
 
     /// Inserts a key-value pair into the MemTable.
-    pub fn set(&mut self, key: String, value: String) {
-        self.memtable.set(key, value, &mut self.wal);
-        if self.memtable.is_full() {
-            self.flush_memtable_to_sstable().unwrap();
+    pub async fn set(&self, key: String, value: String) {
+        // println!("set: Obtaining lock for memtable");
+        let mut memtable = self.memtable.lock().await;
+        // println!("set: Obtained lock for memtable");
+        // println!("set: Obtaining lock for wal");
+        let mut wal = self.wal.lock().await;
+        // println!("set: Obtained lock for wal");
+        memtable.set(key, value, &mut wal);
+        if memtable.is_full() {
+            drop(memtable);
+            drop(wal);
+            self.flush_memtable_to_sstable().await.unwrap();
+            // println!("set: Obtaining lock for sstables");
+            let sstables = self.sstables.lock().await;
+            // println!("set: Obtained lock for sstables");
+            if sstables.len() >= self.sstable_compaction_threshold {
+                drop(sstables);
+                self.compact_sstables().await.unwrap();
+            }
         }
     }
 
-    pub fn flush_memtable_to_sstable(&mut self) -> Result<()> {
+    pub async fn flush_memtable_to_sstable(&self) -> Result<()> {
+        let flush_start = std::time::Instant::now();
+        println!("flush_memtable_to_sstable: Flushing MemTable to SSTable");
         // Create new SSTable
         let uuid = Uuid::new_v4();
-        let sstable_path = format!("{}/sstable_{}_{}", self.data_dir, self.sstables.len(), uuid);
-        let mut sstable = SSTable::new(sstable_path.as_str())?;
-        
+        // println!("flush_memtable_to_sstable: obtain lock for sstables");
+        let mut sstables = self.sstables.lock().await;
+        // println!("flush_memtable_to_sstable: lock obtained for sstables");
+        let sstable_path = format!("{}/sstable_{}_{}", self.data_dir, sstables.len(), uuid);
+        let mut sstable = SSTable::new(sstable_path.as_str()).await?;
+
         let mut offset = 0u64;
         let every_n_entries = sstable.index_every_n_entries;
         let mut entry_count = 0usize;
-        
+
+        // println!("flush_memtable_to_sstable: obtain lock for memtable");
+        let mut memtable = self.memtable.lock().await;
+        // println!("flush_memtable_to_sstable: lock obtained for memtable");
         // Your MemTable data is already sorted if you are using a data structure like BTreeMap
-        for (key, operation) in self.memtable.iter() {
+        for (key, operation) in memtable.iter() {
             // The `write` method in your SSTable implementation should return the number of bytes written
-            let bytes_written = sstable.write(key, operation)?;
-            
+            let bytes_written = sstable.write(key, operation).await?;
+
             // Insert into index; assuming `index` is a BTreeMap<String, u64>
             if entry_count % every_n_entries == 0 {
                 sstable.write_to_index(key.clone(), offset);
@@ -75,43 +95,65 @@ impl Database {
             entry_count += 1;
             offset += bytes_written as u64;
         }
-        sstable.sync()?;
-        
+        // sstable.sync().await?;
+
         // Optionally, write the index to a separate index file
         sstable.write_index()?;
 
         // Add the SSTable to the list of SSTables managed by this Database instance
-        self.sstables.push(sstable);
-
-        if self.sstables.len() >= self.sstable_compaction_threshold {
-            self.compact_sstables()?;
-        }
+        sstables.push(sstable);
+        drop(sstables);
 
         // Clear the MemTable
-        self.memtable.clear(&mut self.wal)?;
+        // println!("flush_memtable_to_sstable: obtain lock for wal");
+        let mut wal = self.wal.lock().await;
+        // println!("flush_memtable_to_sstable: lock obtained for wal");
+        memtable.clear(&mut wal)?;
+
+        let flush_end = std::time::Instant::now();
+
+        println!(
+            "flush_memtable_to_sstable: Flush took {}ms",
+            (flush_end - flush_start).as_millis()
+        );
 
         Ok(())
     }
 
-    pub fn replay_from_wal(&mut self, path: &str) {
+    pub async fn replay_from_wal(&self, path: &str) {
         let mut wal = Wal::from_path(path);
-        self.memtable.replay_wal(&mut wal);
+        let mut memtable = self.memtable.lock().await;
+        memtable.replay_wal(&mut wal);
     }
 
-    pub fn memtable_is_empty(&self) -> bool {
-        self.memtable.is_empty()
+    pub async fn memtable_is_empty(&self) -> bool {
+        self.memtable.lock().await.is_empty()
     }
 
-    pub fn delete(&mut self, key: &String) {
-        self.memtable.delete(key, &mut self.wal);
-        if self.memtable.is_full() {
-            self.flush_memtable_to_sstable().unwrap();
+    pub async fn delete(&self, key: &String) {
+        let mut memtable = self.memtable.lock().await;
+        let mut wal = self.wal.lock().await;
+        memtable.delete(key, &mut wal);
+        if memtable.is_full() {
+            drop(memtable);
+            self.flush_memtable_to_sstable().await.unwrap();
+            // println!("delete: Obtaining lock for sstables");
+            let sstables = self.sstables.lock().await;
+            // println!("delete: Obtained lock for sstables");
+            if sstables.len() >= self.sstable_compaction_threshold {
+                drop(sstables);
+                self.compact_sstables().await.unwrap();
+            }
         }
     }
 
-    pub fn delete_sstables(&mut self) -> Result<()> {
-        let paths = self.sstables.iter().map(|sstable| sstable.get_path()).collect::<Vec<String>>();
-        self.sstables.clear();
+    pub async fn delete_sstables(&self) -> Result<()> {
+        let mut sstables = self.sstables.lock().await;
+        let paths = sstables
+            .iter()
+            .map(|sstable| sstable.get_path())
+            .collect::<Vec<String>>();
+        sstables.clear();
         for path in paths {
             std::fs::remove_file(path)?;
         }
@@ -121,14 +163,21 @@ impl Database {
 
     // Merge old SSTables into a new SSTable to reduce the number of SSTables
     // and improve read performance + reduce disk space usage.
-    pub fn compact_sstables(&mut self) -> Result<()> {
+    pub async fn compact_sstables(&self) -> Result<()> {
         // time how much compaction takes
         let start = std::time::Instant::now();
+        println!("Compacting SSTables");
 
         let mut keys_priority_queue = PriorityQueue::new();
         let uuid = Uuid::new_v4();
-        let sstable_path = format!("{}/sstable_{}_{}", self.data_dir, self.sstables.len(), uuid);
-        let mut new_sstable = SSTable::new(sstable_path.as_str())?;
+
+        let sstable_path = format!(
+            "{}/sstable_{}_{}",
+            self.data_dir,
+            self.sstables.lock().await.len(),
+            uuid
+        );
+        let mut new_sstable = SSTable::new(sstable_path.as_str()).await?;
 
         // we can iterate through sstable entries in order because they are sorted by key
         // for this implementation lets iterate through all of them and write them to a new sstable
@@ -140,31 +189,31 @@ impl Database {
         let mut current_sstables = HashSet::new();
         let mut final_ops = Vec::new();
 
-        // an sstable has an .get_iterator() method that returns an iterator over (key, Operation) tuples.
-        // we can use this to iterate through the sstable entries in order
-        let mut iterators =
-            self.sstables.iter_mut()
-                .map(|sstable| sstable.get_iterator())
-                .filter(|i| i.is_ok())
-                .map(|i| i.unwrap())
-                .collect::<Vec<_>>();
+        // an sstable has a read_item_at() method that you can pass a byte offset, it returns the next offset to read from
+        // async iterators aren't a stable feature so not using them for that reason
+        let mut sstables = self.sstables.lock().await;
+        let mut read_indexes = sstables.iter().map(|_| 0).collect::<Vec<usize>>();
 
         // initialize the current key and offset for each sstable
-        for (i, iterator) in iterators.iter_mut().enumerate() {
-            match iterator.next() {
-                Some(Err(e)) => panic!("Error reading SSTable: {}", e),
-                Some(Ok((key, operation))) => {
-                    keys_priority_queue.push(i, CompactionPriorityQueueItem {
-                        key: key.clone(),
-                        sstable_index: i,
-                        operation: operation.clone(),
-                    });
+        for (i, table) in sstables.iter_mut().enumerate() {
+            match table.read_item_at(read_indexes[i]).await {
+                Err(e) => panic!("Error reading SSTable: {}", e),
+                Ok(Some((key, new_offset, operation))) => {
+                    keys_priority_queue.push(
+                        i,
+                        CompactionPriorityQueueItem {
+                            key: key.clone(),
+                            sstable_index: i,
+                            operation: operation.clone(),
+                        },
+                    );
+                    read_indexes[i] = new_offset;
                     current_sstables.insert(i);
                 }
-                None => (),
+                Ok(None) => (),
             }
         }
-        
+
         // while there are still sstables with entries
         while keys_priority_queue.len() > 0 {
             // find the sstable and operation associated with the smallest key
@@ -192,17 +241,23 @@ impl Database {
             final_ops.push((smallest_key.clone(), smallest_key_operation.clone()));
 
             // if the sstable we just wrote has no more entries, remove it from the current sstables
-            let next = iterators[smallest_key_sstable].next();
+            let next = sstables[smallest_key_sstable]
+                .read_item_at(read_indexes[smallest_key_sstable])
+                .await;
             match next {
-                Some(Err(e)) => panic!("Error reading SSTable: {}", e),
-                Some(Ok((key, operation))) => {
-                    keys_priority_queue.push(smallest_key_sstable, CompactionPriorityQueueItem {
-                        key: key.clone(),
-                        sstable_index: smallest_key_sstable,
-                        operation: operation.clone(),
-                    });
+                Err(e) => panic!("Error reading SSTable: {}", e),
+                Ok(Some((key, new_offset, operation))) => {
+                    keys_priority_queue.push(
+                        smallest_key_sstable,
+                        CompactionPriorityQueueItem {
+                            key: key.clone(),
+                            sstable_index: smallest_key_sstable,
+                            operation: operation.clone(),
+                        },
+                    );
+                    read_indexes[smallest_key_sstable] = new_offset;
                 }
-                None => {
+                Ok(None) => {
                     current_sstables.remove(&smallest_key_sstable);
                 }
             }
@@ -212,30 +267,33 @@ impl Database {
         let every_n_entries = new_sstable.index_every_n_entries;
         let mut entry_count = 0usize;
 
-        let write_start = std::time::Instant::now();
+        let _write_start = std::time::Instant::now();
         // write the final_ops to the new sstable
         for (key, operation) in final_ops.iter() {
-            let bytes_written = new_sstable.write(&key, &operation)?;
+            let bytes_written = new_sstable.write(&key, &operation).await?;
 
             // Insert into index; assuming `index` is a BTreeMap<String, u64>
             if entry_count % every_n_entries == 0 {
                 new_sstable.write_to_index(key.clone(), offset);
             }
-            
+
             entry_count += 1;
             offset += bytes_written as u64;
         }
-        new_sstable.sync()?;
-        let write_end = std::time::Instant::now();
-        println!("Write took {}ms", (write_end - write_start).as_millis());
+        // new_sstable.sync().await?;
+        let _write_end = std::time::Instant::now();
+        // println!("Write took {}ms", (write_end - write_start).as_millis());
 
         // Delete old SSTables
-        let sstable_paths = self.sstables.iter().map(|sstable| sstable.get_path()).collect::<Vec<String>>();
-        self.sstables.clear();
+        let sstable_paths = sstables
+            .iter()
+            .map(|sstable| sstable.get_path())
+            .collect::<Vec<String>>();
+        sstables.clear();
         for path in sstable_paths {
             std::fs::remove_file(path).unwrap_or(());
         }
-        self.sstables.push(new_sstable);
+        sstables.push(new_sstable);
 
         let end = std::time::Instant::now();
 
@@ -244,24 +302,27 @@ impl Database {
         Ok(())
     }
 
-
     /// Attempts to read a value for a given key from the database.
-    /// 
+    ///
     /// 1. First checks the MemTable.
     /// 2. If not found in the MemTable, checks each SSTable.
-    /// 
+    ///
     /// Returns `Some(value)` if found, `None` otherwise.
-    pub fn get(&mut self, key: &str) -> Option<String> {
+    pub async fn get(&self, key: &str) -> Option<String> {
         // First, look for the key in the MemTable
-        match self.memtable.get(key) {
+        let memtable = self.memtable.lock().await;
+        match memtable.get(key) {
             Some(Operation::Insert(value)) => return Some(value.clone()),
             Some(Operation::Delete) => return None,
             None => (),
         }
 
+        // println!("get: Obtaining lock for sstables");
+        let mut sstables = self.sstables.lock().await;
+        // println!("get: Obtained lock for sstables");
         // If the key is not in the MemTable, scan through each SSTable (newest to oldest)
-        for sstable in self.sstables.iter_mut().rev() {
-            match sstable.find_key(key) {
+        for sstable in sstables.iter_mut().rev() {
+            match sstable.find_key(key).await {
                 Ok(Some(Operation::Insert(value))) => return Some(value),
                 Ok(Some(Operation::Delete)) => return None,
                 Ok(None) => continue,
