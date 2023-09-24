@@ -75,26 +75,23 @@ impl Database {
         let sstable_path = format!("{}/sstable_{}_{}", self.data_dir, sstables.len(), uuid);
         let mut sstable = SSTable::new(sstable_path.as_str()).await?;
 
-        let mut offset = 0u64;
         let every_n_entries = sstable.index_every_n_entries;
-        let mut entry_count = 0usize;
 
         // println!("flush_memtable_to_sstable: obtain lock for memtable");
         let mut memtable = self.memtable.lock().await;
         // println!("flush_memtable_to_sstable: lock obtained for memtable");
-        // Your MemTable data is already sorted if you are using a data structure like BTreeMap
-        for (key, operation) in memtable.iter() {
-            // The `write` method in your SSTable implementation should return the number of bytes written
-            let bytes_written = sstable.write(key, operation).await?;
 
-            // Insert into index; assuming `index` is a BTreeMap<String, u64>
-            if entry_count % every_n_entries == 0 {
-                sstable.write_to_index(key.clone(), offset);
+        // MemTable data is already sorted if you are using a data structure like BTreeMap
+        let vec_of_operations = memtable.iter().collect::<Vec<(&String, &Operation)>>();
+        let offsets = sstable.batch_write(&vec_of_operations).await?;
+
+        // for every n entries, add element to index
+        for (i, (key, _)) in vec_of_operations.iter().enumerate() {
+            if i % every_n_entries == 0 {
+                sstable.write_to_index(key.to_string(), offsets[i] as u64);
             }
-
-            entry_count += 1;
-            offset += bytes_written as u64;
         }
+
         // sstable.sync().await?;
 
         // Optionally, write the index to a separate index file

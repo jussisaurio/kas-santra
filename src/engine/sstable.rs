@@ -1,5 +1,11 @@
-use std::{io::{SeekFrom, Result, ErrorKind}, collections::BTreeMap};
-use tokio::{fs::{File, OpenOptions}, io::{AsyncSeekExt, AsyncReadExt, AsyncWriteExt}};
+use std::{
+    collections::BTreeMap,
+    io::{ErrorKind, Result, SeekFrom},
+};
+use tokio::{
+    fs::{File, OpenOptions},
+    io::{AsyncReadExt, AsyncSeekExt, AsyncWriteExt},
+};
 
 use super::operation::Operation;
 
@@ -18,7 +24,8 @@ impl SSTable {
             .read(true)
             .write(true)
             .create(true)
-            .open(path).await?;
+            .open(path)
+            .await?;
         Ok(SSTable {
             file: f,
             path: path.to_string(),
@@ -28,10 +35,7 @@ impl SSTable {
     }
 
     pub async fn from_file(path: &str) -> Result<Self> {
-        let file = OpenOptions::new()
-            .read(true)
-            .write(true)
-            .open(path).await?;
+        let file = OpenOptions::new().read(true).write(true).open(path).await?;
         let mut table = SSTable {
             file,
             path: path.to_string(),
@@ -59,23 +63,23 @@ impl SSTable {
     pub fn write_to_index(&mut self, key: String, offset: u64) {
         self.index.insert(key, offset);
     }
-    
+
     // Create the index after writing entries to the SSTable
     pub async fn create_index(&mut self) -> Result<()> {
         let mut offset = 0u64;
-        let mut buffer = [0; 4];  // To read the u32 lengths of key and value
+        let mut buffer = [0; 4]; // To read the u32 lengths of key and value
 
         // Make sure to start from the beginning of the file
         self.file.seek(SeekFrom::Start(0)).await?;
 
-        self.index.clear();  // Clear any existing index entries
+        self.index.clear(); // Clear any existing index entries
 
         loop {
             // Read key length
             match self.file.read_exact(&mut buffer).await {
                 Ok(_) => {
                     let key_length = u32::from_le_bytes(buffer);
-                    
+
                     // Read value length
                     self.file.read_exact(&mut buffer).await?;
                     let value_length = u32::from_le_bytes(buffer);
@@ -86,14 +90,16 @@ impl SSTable {
                     let key = String::from_utf8_lossy(&key).into_owned();
 
                     // Skip value (we don't need it for index creation)
-                    self.file.seek(SeekFrom::Current(value_length as i64)).await?;
+                    self.file
+                        .seek(SeekFrom::Current(value_length as i64))
+                        .await?;
 
                     // Insert the key and its corresponding offset into index
                     self.index.insert(key, offset);
 
                     // Update offset
-                    offset += 4 + 4 + key_length as u64 + value_length as u64;  // Key length bytes + Value length bytes + Key bytes + Value bytes
-                },
+                    offset += 4 + 4 + key_length as u64 + value_length as u64; // Key length bytes + Value length bytes + Key bytes + Value bytes
+                }
                 Err(ref e) if e.kind() == ErrorKind::UnexpectedEof => break,
                 Err(e) => return Err(e),
             }
@@ -102,14 +108,17 @@ impl SSTable {
         Ok(())
     }
 
-    pub async fn read_item_at(&mut self, byte_offset: usize) -> Result<Option<(String, usize, Operation)>> {
-        let mut buffer = [0; 4];  // To read the u32 lengths of key and value
-        // seek
+    pub async fn read_item_at(
+        &mut self,
+        byte_offset: usize,
+    ) -> Result<Option<(String, usize, Operation)>> {
+        let mut buffer = [0; 4]; // To read the u32 lengths of key and value
+                                 // seek
         self.file.seek(SeekFrom::Start(byte_offset as u64)).await?;
         match self.file.read_exact(&mut buffer).await {
             Ok(_) => {
                 let key_length = u32::from_le_bytes(buffer);
-                
+
                 // Read value length
                 self.file.read_exact(&mut buffer).await?;
                 let value_length = u32::from_le_bytes(buffer);
@@ -125,16 +134,16 @@ impl SSTable {
                 let value = String::from_utf8_lossy(&value).into_owned();
 
                 // Update offset
-                let new_offset = byte_offset +  4 + 4 + key_length as usize + value_length as usize;  // Key length bytes + Value length bytes + Key bytes + Value bytes
+                let new_offset = byte_offset + 4 + 4 + key_length as usize + value_length as usize; // Key length bytes + Value length bytes + Key bytes + Value bytes
 
                 match value.as_str() {
                     "TOMBSTONE" => Ok(Some((key, new_offset, Operation::Delete))),
                     _ => Ok(Some((key, new_offset, Operation::Insert(value)))),
                 }
-            },
+            }
             Err(ref e) if e.kind() == ErrorKind::UnexpectedEof => Ok(None),
             Err(e) => Err(e),
-        }    
+        }
     }
 
     pub async fn write(&mut self, key: &str, operation: &Operation) -> Result<usize> {
@@ -142,12 +151,8 @@ impl SSTable {
         let mut bytes_written = 0;
 
         let (value, value_length) = match operation {
-            Operation::Insert(val) => {
-                (val.as_str(), val.len() as u32)
-            }
-            Operation::Delete => {
-                ("TOMBSTONE", "TOMBSTONE".len() as u32)
-            }
+            Operation::Insert(val) => (val.as_str(), val.len() as u32),
+            Operation::Delete => ("TOMBSTONE", "TOMBSTONE".len() as u32),
         };
 
         self.file.write_all(&key_length.to_le_bytes()).await?;
@@ -158,6 +163,37 @@ impl SSTable {
         bytes_written += 4 + 4 + key_length as usize + value_length as usize;
 
         Ok(bytes_written)
+    }
+
+    pub async fn batch_write(
+        &mut self,
+        operations: &Vec<(&String, &Operation)>,
+    ) -> Result<Vec<usize>> {
+        let mut current_offset = 0;
+        let mut offsets = vec![];
+        let mut write_buf = vec![];
+        for (key, operation) in operations {
+            offsets.push(current_offset);
+            let key_length = key.len() as u32;
+            let mut bytes_written_for_key = 0;
+
+            let (value, value_length) = match operation {
+                Operation::Insert(val) => (val.as_str(), val.len() as u32),
+                Operation::Delete => ("TOMBSTONE", "TOMBSTONE".len() as u32),
+            };
+
+            write_buf.extend_from_slice(&key_length.to_le_bytes());
+            write_buf.extend_from_slice(&value_length.to_le_bytes());
+            write_buf.extend_from_slice(key.as_bytes());
+            write_buf.extend_from_slice(value.as_bytes());
+
+            bytes_written_for_key += 4 + 4 + key_length as usize + value_length as usize;
+
+            current_offset += bytes_written_for_key;
+        }
+
+        self.file.write_all(&write_buf).await?;
+        Ok(offsets)
     }
 
     pub async fn sync(&mut self) -> Result<()> {
@@ -172,7 +208,7 @@ impl SSTable {
         loop {
             let mut key_length_bytes = [0u8; 4];
             let mut value_length_bytes = [0u8; 4];
-            
+
             // Read lengths
             let read_key_length = self.file.read_exact(&mut key_length_bytes).await;
             if read_key_length.is_err() {
@@ -184,15 +220,15 @@ impl SSTable {
                 println!("Error reading value length bytes");
                 break;
             }
-            
+
             let key_length = u32::from_le_bytes(key_length_bytes);
             let value_length = u32::from_le_bytes(value_length_bytes);
-            
+
             // Read key
             buffer.resize(key_length as usize, 0);
             self.file.read_exact(&mut buffer).await?;
             let key = String::from_utf8_lossy(&buffer);
-            
+
             // Read value
             let mut value_buffer = Vec::new();
             value_buffer.resize(value_length as usize, 0);
@@ -200,7 +236,7 @@ impl SSTable {
             let value = String::from_utf8_lossy(&value_buffer);
 
             println!("key: {}, value: {}", key, value);
-            
+
             if value == "TOMBSTONE" {
                 operations.push((key.into_owned(), Operation::Delete));
             } else {
@@ -233,11 +269,11 @@ impl SSTable {
         let start_offset = self.index[closest_key];
 
         self.file.seek(SeekFrom::Start(start_offset)).await?;
-        
+
         loop {
             let mut key_length_bytes = [0u8; 4];
             let mut value_length_bytes = [0u8; 4];
-            
+
             // Read lengths
             let read_key_length = self.file.read_exact(&mut key_length_bytes).await;
             if read_key_length.is_err() {
@@ -249,15 +285,15 @@ impl SSTable {
                 println!("Error reading value length bytes");
                 break;
             }
-            
+
             let key_length = u32::from_le_bytes(key_length_bytes);
             let value_length = u32::from_le_bytes(value_length_bytes);
-            
+
             // Read key
             buffer.resize(key_length as usize, 0);
             self.file.read_exact(&mut buffer).await?;
             let key = String::from_utf8_lossy(&buffer);
-            
+
             // Read value
             let mut value_buffer = Vec::new();
             value_buffer.resize(value_length as usize, 0);
@@ -265,7 +301,7 @@ impl SSTable {
             let value = String::from_utf8_lossy(&value_buffer);
 
             println!("key: {}, value: {}, target_key: {}", key, value, target_key);
-            
+
             if key == target_key {
                 return if value == "TOMBSTONE" {
                     Ok(Some(Operation::Delete))
@@ -277,5 +313,4 @@ impl SSTable {
 
         Ok(None)
     }
-
 }
