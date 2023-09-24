@@ -183,36 +183,45 @@ impl Database {
         // we need to keep track of the current key we are looking at in each sstable
         // we can use a HashMap to keep track of the current key for each sstable
         // and the current offset in the sstable
-        let mut current_sstables = HashSet::new();
+        let mut sstables = self.sstables.lock().await;
+        let mut current_sstables = sstables
+            .iter()
+            .enumerate()
+            .map(|(i, _)| i)
+            .collect::<HashSet<_>>();
         let mut final_ops = Vec::new();
 
         // an sstable has a read_item_at() method that you can pass a byte offset, it returns the next offset to read from
         // async iterators aren't a stable feature so not using them for that reason
-        let mut sstables = self.sstables.lock().await;
+
         let mut read_indexes = sstables.iter().map(|_| 0).collect::<Vec<usize>>();
 
-        // initialize the current key and offset for each sstable
-        for (i, table) in sstables.iter_mut().enumerate() {
-            match table.read_item_at(read_indexes[i]).await {
-                Err(e) => panic!("Error reading SSTable: {}", e),
-                Ok(Some((key, new_offset, operation))) => {
-                    keys_priority_queue.push(
-                        i,
-                        CompactionPriorityQueueItem {
-                            key: key.clone(),
-                            sstable_index: i,
-                            operation: operation.clone(),
-                        },
-                    );
-                    read_indexes[i] = new_offset;
-                    current_sstables.insert(i);
-                }
-                Ok(None) => (),
-            }
-        }
-
         // while there are still sstables with entries
-        while keys_priority_queue.len() > 0 {
+        while current_sstables.len() > 0 {
+            if keys_priority_queue.len() == 0 {
+                // initialize the current key and offset for each sstable
+                for (i, table) in sstables.iter_mut().enumerate() {
+                    if !current_sstables.contains(&i) {
+                        continue;
+                    }
+                    match table.read_item_at(read_indexes[i]).await {
+                        Err(e) => panic!("Error reading SSTable: {}", e),
+                        Ok(Some((key, new_offset, operation))) => {
+                            keys_priority_queue.push(
+                                i,
+                                CompactionPriorityQueueItem {
+                                    key: key.clone(),
+                                    sstable_index: i,
+                                    operation: operation.clone(),
+                                },
+                            );
+                            read_indexes[i] = new_offset;
+                            current_sstables.insert(i);
+                        }
+                        Ok(None) => (),
+                    }
+                }
+            }
             // find the sstable and operation associated with the smallest key
             let (_, item) = keys_priority_queue.pop().unwrap();
             loop {
