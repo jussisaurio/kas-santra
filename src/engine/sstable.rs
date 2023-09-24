@@ -200,48 +200,17 @@ impl SSTable {
         self.file.sync_all().await
     }
 
-    pub async fn get_as_operations(&mut self) -> Result<Vec<(String, Operation)>> {
-        let mut buffer = vec![];
-        self.file.seek(SeekFrom::Start(0)).await?;
+    pub async fn read_all(&mut self) -> Result<Vec<(String, Operation)>> {
         let mut operations = vec![];
-
+        let mut offset = 0;
         loop {
-            let mut key_length_bytes = [0u8; 4];
-            let mut value_length_bytes = [0u8; 4];
-
-            // Read lengths
-            let read_key_length = self.file.read_exact(&mut key_length_bytes).await;
-            if read_key_length.is_err() {
-                println!("Error reading key length bytes");
-                println!("{:?}", read_key_length);
+            let maybe_op = self.read_item_at(offset).await?;
+            if maybe_op.is_none() {
                 break;
             }
-            if self.file.read_exact(&mut value_length_bytes).await.is_err() {
-                println!("Error reading value length bytes");
-                break;
-            }
-
-            let key_length = u32::from_le_bytes(key_length_bytes);
-            let value_length = u32::from_le_bytes(value_length_bytes);
-
-            // Read key
-            buffer.resize(key_length as usize, 0);
-            self.file.read_exact(&mut buffer).await?;
-            let key = String::from_utf8_lossy(&buffer);
-
-            // Read value
-            let mut value_buffer = Vec::new();
-            value_buffer.resize(value_length as usize, 0);
-            self.file.read_exact(&mut value_buffer).await?;
-            let value = String::from_utf8_lossy(&value_buffer);
-
-            println!("key: {}, value: {}", key, value);
-
-            if value == "TOMBSTONE" {
-                operations.push((key.into_owned(), Operation::Delete));
-            } else {
-                operations.push((key.into_owned(), Operation::Insert(value.into_owned())));
-            }
+            let (key, new_offset, op) = maybe_op.unwrap();
+            operations.push((key, op));
+            offset = new_offset;
         }
 
         Ok(operations)

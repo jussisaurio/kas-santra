@@ -126,7 +126,7 @@ async fn test_sstable_entries_are_written_in_alphabetical_order() {
     let mut sstables = database.sstables.lock().await;
     let sstable = &mut sstables[0];
 
-    let operations = sstable.get_as_operations().await.unwrap();
+    let operations = sstable.read_all().await.unwrap();
 
     assert_eq!(operations[0].0, "baz");
     assert_eq!(operations[1].0, "boo");
@@ -157,7 +157,7 @@ async fn test_sstable_compaction() {
     let mut sstables = database.sstables.lock().await;
     let sstable = &mut sstables[0];
 
-    let operations = sstable.get_as_operations().await.unwrap();
+    let operations = sstable.read_all().await.unwrap();
 
     assert!(operations.len() == 3);
     assert_eq!(operations[0], ("baz".to_string(), Operation::Delete));
@@ -173,6 +173,73 @@ async fn test_sstable_compaction() {
     let nonexistent_second_sstable = sstables.get(1);
     assert!(nonexistent_second_sstable.is_none());
 }
+
+#[tokio::test]
+async fn test_sstable_compaction_keys_are_ordered_after_compaction() {
+    let ctx = setup().await;
+    let database = Database::new(ctx.data_dir.as_str());
+
+    database.set("fff".to_string(), "fff".to_string()).await;
+    database.set("eee".to_string(), "eee".to_string()).await;
+    database.set("ddd".to_string(), "ddd".to_string()).await;
+
+    database.flush_memtable_to_sstable().await.unwrap();
+
+    database.set("ccc".to_string(), "ccc".to_string()).await;
+    database.set("bbb".to_string(), "bbb".to_string()).await;
+    database.set("aaa".to_string(), "aaa".to_string()).await;
+
+    database.flush_memtable_to_sstable().await.unwrap();
+
+    database.compact_sstables().await.unwrap();
+
+    let mut sstables = database.sstables.lock().await;
+
+    let sstable = &mut sstables[0];
+
+    let operations = sstable.read_all().await.unwrap();
+
+    assert!(operations.len() == 6);
+
+    assert_eq!(
+        operations[0],
+        ("aaa".to_string(), Operation::Insert("aaa".to_string()))
+    );
+    assert_eq!(
+        operations[1],
+        ("bbb".to_string(), Operation::Insert("bbb".to_string()))
+    );
+    assert_eq!(
+        operations[2],
+        ("ccc".to_string(), Operation::Insert("ccc".to_string()))
+    );
+    assert_eq!(
+        operations[3],
+        ("ddd".to_string(), Operation::Insert("ddd".to_string()))
+    );
+    assert_eq!(
+        operations[4],
+        ("eee".to_string(), Operation::Insert("eee".to_string()))
+    );
+    assert_eq!(
+        operations[5],
+        ("fff".to_string(), Operation::Insert("fff".to_string()))
+    );
+}
+
+// #[tokio::test]
+// async fn test_an_arbitrary_sstable_to_see_what_it_contains() {
+//     let path = "data/sstable_10_71aed8fe-2119-4216-9cd6-2244963e2861";
+//     let mut sstable = kassantra::engine::sstable::SSTable::from_file(path)
+//         .await
+//         .unwrap();
+
+//     let operations = sstable.read_all().await.unwrap();
+
+//     println!("{:?}", operations);
+
+//     assert!(false);
+// }
 
 // after all tests, remove all sstables and wal files
 struct Setup {

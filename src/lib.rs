@@ -344,7 +344,7 @@ impl Database {
 }
 
 #[derive(PartialEq, Eq, Debug, Clone)]
-struct CompactionPriorityQueueItem {
+pub struct CompactionPriorityQueueItem {
     key: String,
     sstable_index: usize,
     operation: Operation,
@@ -354,7 +354,7 @@ impl Ord for CompactionPriorityQueueItem {
     fn cmp(&self, other: &Self) -> std::cmp::Ordering {
         match self.key.cmp(&other.key) {
             std::cmp::Ordering::Equal => self.sstable_index.cmp(&other.sstable_index),
-            ordering => ordering,
+            ordering => ordering.reverse(),
         }
     }
 }
@@ -362,5 +362,58 @@ impl Ord for CompactionPriorityQueueItem {
 impl PartialOrd for CompactionPriorityQueueItem {
     fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
         Some(self.cmp(other))
+    }
+}
+
+// Test that CompactionPriorityQueueItem is ordered correctly
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_compaction_priority_queue_item_ordering() {
+        let item1 = CompactionPriorityQueueItem {
+            key: "aaa".to_string(),
+            sstable_index: 0,
+            operation: Operation::Insert("aaa".to_string()),
+        };
+        let item2 = CompactionPriorityQueueItem {
+            key: "bbb".to_string(),
+            sstable_index: 0,
+            operation: Operation::Insert("bbb".to_string()),
+        };
+
+        assert!(item1 > item2);
+
+        let item1 = CompactionPriorityQueueItem {
+            key: "bbb".to_string(),
+            sstable_index: 0,
+            operation: Operation::Insert("bbb".to_string()),
+        };
+
+        let item2 = CompactionPriorityQueueItem {
+            key: "bbb".to_string(),
+            sstable_index: 1,
+            operation: Operation::Insert("bbb".to_string()),
+        };
+
+        let item3 = CompactionPriorityQueueItem {
+            key: "aaa".to_string(),
+            sstable_index: 0,
+            operation: Operation::Insert("aaa".to_string()),
+        };
+
+        assert!(item1 < item2);
+        assert!(item2 < item3);
+
+        let mut pq = PriorityQueue::new();
+
+        pq.push(0, item1.clone());
+        pq.push(1, item2.clone());
+        pq.push(2, item3.clone());
+
+        assert_eq!(pq.pop().unwrap(), (2, item3));
+        assert_eq!(pq.pop().unwrap(), (1, item2));
+        assert_eq!(pq.pop().unwrap(), (0, item1));
     }
 }
