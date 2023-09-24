@@ -216,6 +216,30 @@ impl SSTable {
         Ok(operations)
     }
 
+    pub async fn batch_read(
+        &mut self,
+        number_of_items: usize,
+        offset: usize,
+    ) -> Result<(Vec<(String, Operation)>, usize)> {
+        let mut operations = vec![];
+        let mut current_offset = offset;
+        for _ in 0..number_of_items {
+            let maybe_op = self.read_item_at(current_offset).await?;
+            if maybe_op.is_none() {
+                break;
+            }
+            let (key, new_offset, op) = maybe_op.unwrap();
+            operations.push((key, op));
+            current_offset = new_offset;
+        }
+
+        // println!("Read {} items", operations.len());
+        // println!("Current offset: {}", current_offset);
+        // println!("Operations: {:?}", operations);
+
+        Ok((operations, current_offset))
+    }
+
     pub async fn find_key(&mut self, target_key: &str) -> Result<Option<Operation>> {
         let mut buffer = vec![];
         // binary search self.index (in memory) to find the closest key

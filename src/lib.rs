@@ -196,6 +196,8 @@ impl Database {
 
         let mut read_indexes = sstables.iter().map(|_| 0).collect::<Vec<usize>>();
 
+        let mut ops_in_queue_per_sstable = sstables.iter().map(|_| 0).collect::<Vec<usize>>();
+
         // while there are still sstables with entries
         while current_sstables.len() > 0 {
             if keys_priority_queue.len() == 0 {
@@ -204,21 +206,27 @@ impl Database {
                     if !current_sstables.contains(&i) {
                         continue;
                     }
-                    match table.read_item_at(read_indexes[i]).await {
+                    // println!("Reading this doofus: {:?}", i);
+                    match table.batch_read(10, read_indexes[i]).await {
                         Err(e) => panic!("Error reading SSTable: {}", e),
-                        Ok(Some((key, new_offset, operation))) => {
-                            keys_priority_queue.push(
-                                i,
-                                CompactionPriorityQueueItem {
+                        Ok((tuples, new_offset)) => {
+                            if tuples.len() == 0 {
+                                current_sstables.remove(&i);
+                                continue;
+                            }
+                            ops_in_queue_per_sstable[i] += tuples.len();
+                            for (key, operation) in tuples {
+                                // println!("Adding to queue: {:?}", key);
+                                let item = CompactionPriorityQueueItem {
                                     key: key.clone(),
                                     sstable_index: i,
                                     operation: operation.clone(),
-                                },
-                            );
+                                };
+                                keys_priority_queue.push(item.clone(), item);
+                            }
                             read_indexes[i] = new_offset;
                             current_sstables.insert(i);
                         }
-                        Ok(None) => (),
                     }
                 }
             }
@@ -229,13 +237,20 @@ impl Database {
             }
             // find the sstable and operation associated with the smallest key
             let (_, item) = keys_priority_queue.pop().unwrap();
+            // println!("Item from queue: {:?}", item);
+            // println!("Items in queue per sstable: {:?}", ops_in_queue_per_sstable);
+            // println!("Current sstables: {:?}", current_sstables);
+            // println!("Smallest key ssstable: {:?}", item.sstable_index);
+            // println!("Queue: {:?}", keys_priority_queue.len());
             loop {
                 // pop same items since they are duplicates and we are ordering by newest sstable first
                 let next = keys_priority_queue.peek();
                 match next {
                     Some((_, next_item)) => {
                         if next_item.key == item.key {
-                            keys_priority_queue.pop();
+                            let item = keys_priority_queue.pop().unwrap();
+                            // println!("Dropping duplicate: {:?}", item);
+                            ops_in_queue_per_sstable[item.0.sstable_index] -= 1;
                         } else {
                             break;
                         }
@@ -251,25 +266,33 @@ impl Database {
             // write the smallest key and operation to final_ops
             final_ops.push((smallest_key, smallest_key_operation));
 
-            // if the sstable we just wrote has no more entries, remove it from the current sstables
-            let next = sstables[smallest_key_sstable]
-                .read_item_at(read_indexes[smallest_key_sstable])
-                .await;
-            match next {
-                Err(e) => panic!("Error reading SSTable: {}", e),
-                Ok(Some((key, new_offset, operation))) => {
-                    keys_priority_queue.push(
-                        smallest_key_sstable,
-                        CompactionPriorityQueueItem {
-                            key: key.clone(),
-                            sstable_index: smallest_key_sstable,
-                            operation: operation.clone(),
-                        },
-                    );
-                    read_indexes[smallest_key_sstable] = new_offset;
-                }
-                Ok(None) => {
-                    current_sstables.remove(&smallest_key_sstable);
+            // if the sstable that has the smallest key has no more entries in the pq currently, load more entries
+            // if there aren't any more to load, remove it from current_sstables
+            ops_in_queue_per_sstable[smallest_key_sstable] -= 1;
+            if ops_in_queue_per_sstable[smallest_key_sstable] == 0 {
+                // println!("Reading this dingus: {:?}", smallest_key_sstable);
+                match sstables[smallest_key_sstable]
+                    .batch_read(10, read_indexes[smallest_key_sstable])
+                    .await
+                {
+                    Err(e) => panic!("Error reading SSTable: {}", e),
+                    Ok((tuples, new_offset)) => {
+                        if tuples.len() == 0 {
+                            current_sstables.remove(&smallest_key_sstable);
+                            continue;
+                        }
+                        ops_in_queue_per_sstable[smallest_key_sstable] += tuples.len();
+                        for (key, operation) in tuples {
+                            let item = CompactionPriorityQueueItem {
+                                key: key.clone(),
+                                sstable_index: smallest_key_sstable,
+                                operation: operation.clone(),
+                            };
+                            keys_priority_queue.push(item.clone(), item);
+                        }
+                        read_indexes[smallest_key_sstable] = new_offset;
+                        current_sstables.insert(smallest_key_sstable);
+                    }
                 }
             }
         }
@@ -357,7 +380,7 @@ impl Database {
     }
 }
 
-#[derive(PartialEq, Eq, Debug, Clone)]
+#[derive(PartialEq, Eq, Debug, Clone, Hash)]
 pub struct CompactionPriorityQueueItem {
     key: String,
     sstable_index: usize,

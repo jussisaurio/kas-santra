@@ -199,6 +199,7 @@ async fn test_sstable_compaction_keys_are_ordered_after_compaction() {
 
     let operations = sstable.read_all().await.unwrap();
 
+    println!("{:?}", operations);
     assert!(operations.len() == 6);
 
     assert_eq!(
