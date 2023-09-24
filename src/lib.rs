@@ -222,6 +222,11 @@ impl Database {
                     }
                 }
             }
+
+            // there might be no more entries in any sstable even though they were in current_sstables at the start of the loop
+            if keys_priority_queue.len() == 0 {
+                break;
+            }
             // find the sstable and operation associated with the smallest key
             let (_, item) = keys_priority_queue.pop().unwrap();
             loop {

@@ -36,7 +36,7 @@ async fn run_client() {
     // loop and bombard the tcp server with requests
     loop {
         // sleep for some ms
-        tokio::time::sleep(Duration::from_millis(1)).await;
+        tokio::time::sleep(Duration::from_micros(200)).await;
         let mut stream = TcpStream::connect(format!("127.0.0.1:{}", port_from_env))
             .await
             .unwrap();
