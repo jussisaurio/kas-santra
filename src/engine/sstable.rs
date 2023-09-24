@@ -268,6 +268,13 @@ impl SSTable {
         let closest_key = keys[middle];
         let start_offset = self.index[closest_key];
 
+        println!("Closest key: {}, offset: {}", closest_key, start_offset);
+
+        // if closest_key is lexically greater than target_key, return None
+        if closest_key.as_str().cmp(target_key) == std::cmp::Ordering::Greater {
+            return Ok(None);
+        }
+
         self.file.seek(SeekFrom::Start(start_offset)).await?;
 
         loop {
@@ -300,7 +307,7 @@ impl SSTable {
             self.file.read_exact(&mut value_buffer).await?;
             let value = String::from_utf8_lossy(&value_buffer);
 
-            println!("key: {}, value: {}, target_key: {}", key, value, target_key);
+            // println!("key: {}, value: {}, target_key: {}", key, value, target_key);
 
             if key == target_key {
                 return if value == "TOMBSTONE" {

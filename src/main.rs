@@ -35,8 +35,8 @@ async fn run_client() {
     let start_time = std::time::Instant::now();
     // loop and bombard the tcp server with requests
     loop {
-        // sleep for 5 ms
-        tokio::time::sleep(Duration::from_millis(5)).await;
+        // sleep for some ms
+        tokio::time::sleep(Duration::from_millis(1)).await;
         let mut stream = TcpStream::connect(format!("127.0.0.1:{}", port_from_env))
             .await
             .unwrap();

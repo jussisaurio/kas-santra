@@ -235,7 +235,7 @@ impl Database {
             let smallest_key = item.key;
             let smallest_key_operation = item.operation;
             // write the smallest key and operation to final_ops
-            final_ops.push((smallest_key.clone(), smallest_key_operation.clone()));
+            final_ops.push((smallest_key, smallest_key_operation));
 
             // if the sstable we just wrote has no more entries, remove it from the current sstables
             let next = sstables[smallest_key_sstable]
@@ -260,26 +260,21 @@ impl Database {
             }
         }
 
-        let mut offset = 0u64;
         let every_n_entries = new_sstable.index_every_n_entries;
-        let mut entry_count = 0usize;
 
-        let _write_start = std::time::Instant::now();
-        // write the final_ops to the new sstable
-        for (key, operation) in final_ops.iter() {
-            let bytes_written = new_sstable.write(&key, &operation).await?;
+        let vec_of_operations = final_ops
+            .iter()
+            .map(|(key, op)| (key, op))
+            .collect::<Vec<_>>();
 
-            // Insert into index; assuming `index` is a BTreeMap<String, u64>
-            if entry_count % every_n_entries == 0 {
-                new_sstable.write_to_index(key.clone(), offset);
+        let offsets = new_sstable.batch_write(&vec_of_operations).await?;
+
+        // for every n entries, add element to index
+        for (i, (key, _)) in final_ops.iter().enumerate() {
+            if i % every_n_entries == 0 {
+                new_sstable.write_to_index(key.to_string(), offsets[i] as u64);
             }
-
-            entry_count += 1;
-            offset += bytes_written as u64;
         }
-        // new_sstable.sync().await?;
-        let _write_end = std::time::Instant::now();
-        // println!("Write took {}ms", (write_end - write_start).as_millis());
 
         // Delete old SSTables
         let sstable_paths = sstables
@@ -309,20 +304,36 @@ impl Database {
         // First, look for the key in the MemTable
         let memtable = self.memtable.lock().await;
         match memtable.get(key) {
-            Some(Operation::Insert(value)) => return Some(value.clone()),
-            Some(Operation::Delete) => return None,
-            None => (),
+            Some(Operation::Insert(value)) => {
+                println!("get: Found key in memtable");
+                return Some(value.clone());
+            }
+            Some(Operation::Delete) => {
+                println!("get: Found key in memtable but it was deleted");
+                return None;
+            }
+            None => {
+                println!("get: Key not found in memtable");
+            }
         }
 
         // println!("get: Obtaining lock for sstables");
         let mut sstables = self.sstables.lock().await;
         // println!("get: Obtained lock for sstables");
         // If the key is not in the MemTable, scan through each SSTable (newest to oldest)
-        for sstable in sstables.iter_mut().rev() {
+        for (i, sstable) in sstables.iter_mut().rev().enumerate() {
             match sstable.find_key(key).await {
-                Ok(Some(Operation::Insert(value))) => return Some(value),
-                Ok(Some(Operation::Delete)) => return None,
-                Ok(None) => continue,
+                Ok(Some(Operation::Insert(value))) => {
+                    println!("get: Found key in sstable {}", i);
+                    return Some(value);
+                }
+                Ok(Some(Operation::Delete)) => {
+                    println!("get: Found tombstone in sstable {}", i);
+                    return None;
+                }
+                Ok(None) => {
+                    println!("get: Key not found in sstable {}", i);
+                }
                 Err(e) => panic!("Error reading SSTable: {}", e),
             }
         }
