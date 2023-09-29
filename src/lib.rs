@@ -7,9 +7,12 @@ use engine::operation::Operation;
 use engine::sstable::SSTable;
 use engine::wal::Wal;
 use priority_queue::PriorityQueue;
+use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
+use std::fs::read_dir;
 use std::io::Result;
 use std::sync::Arc;
+use std::time::SystemTime;
 use tokio::sync::Mutex;
 use uuid::Uuid;
 
@@ -34,6 +37,53 @@ impl Database {
             sstable_compaction_threshold: 10,
             data_dir: data_dir.to_string(),
         }
+    }
+
+    pub async fn load(data_dir: &str) -> Result<Self> {
+        // sstable names are sstable_timestamp_uuid so we can sort them by timestamp
+        let dir = tokio::fs::read_dir(data_dir).await;
+        if dir.is_err() {
+            return Ok(Self::new(data_dir));
+        }
+        let mut dir = dir.unwrap();
+        let mut sstable_paths = Vec::new();
+        let mut wal_path = None;
+        while let Some(entry) = dir.next_entry().await? {
+            if entry.file_name().to_str().unwrap().starts_with("sstable") {
+                sstable_paths.push(entry.path());
+            }
+            if entry.file_name().to_str().unwrap().starts_with("wal") {
+                wal_path = Some(entry.path());
+            }
+        }
+
+        sstable_paths.sort();
+
+        println!("Loading SSTables: {:?}", sstable_paths);
+        println!("Loading WAL: {:?}", wal_path);
+
+        let mut sstables = Vec::new();
+        for path in sstable_paths {
+            let sstable = SSTable::from_file(path.to_str().unwrap()).await?;
+            sstables.push(sstable);
+        }
+
+        let database = Self {
+            wal: Arc::new(Mutex::new(match wal_path {
+                Some(path) => Wal::from_file(path.to_str().unwrap()),
+                None => Wal::new(format!("{}/wal_{}", data_dir, Uuid::new_v4()).as_str()),
+            })),
+            memtable: Arc::new(Mutex::new(MemTable::new())),
+            sstables: Arc::new(Mutex::new(sstables)),
+            sstable_compaction_threshold: 10,
+            data_dir: data_dir.to_string(),
+        };
+
+        database
+            .replay_from_wal(database.wal_path().await.as_str())
+            .await;
+
+        Ok(database)
     }
 
     pub async fn wal_path(&self) -> String {
@@ -64,6 +114,13 @@ impl Database {
         }
     }
 
+    fn get_timestamp() -> u64 {
+        SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs()
+    }
+
     pub async fn flush_memtable_to_sstable(&self) -> Result<()> {
         let flush_start = std::time::Instant::now();
         println!("flush_memtable_to_sstable: Flushing MemTable to SSTable");
@@ -72,7 +129,12 @@ impl Database {
         // println!("flush_memtable_to_sstable: obtain lock for sstables");
         let mut sstables = self.sstables.lock().await;
         // println!("flush_memtable_to_sstable: lock obtained for sstables");
-        let sstable_path = format!("{}/sstable_{}_{}", self.data_dir, sstables.len(), uuid);
+        let sstable_path = format!(
+            "{}/sstable_{}_{}",
+            self.data_dir,
+            Database::get_timestamp(),
+            uuid
+        );
         let mut sstable = SSTable::new(sstable_path.as_str()).await?;
 
         let every_n_entries = sstable.index_every_n_entries;
@@ -118,7 +180,7 @@ impl Database {
     }
 
     pub async fn replay_from_wal(&self, path: &str) {
-        let mut wal = Wal::from_path(path);
+        let mut wal = Wal::from_file(path);
         let mut memtable = self.memtable.lock().await;
         memtable.replay_wal(&mut wal);
     }
@@ -171,7 +233,7 @@ impl Database {
         let sstable_path = format!(
             "{}/sstable_{}_{}",
             self.data_dir,
-            self.sstables.lock().await.len(),
+            Database::get_timestamp(),
             uuid
         );
         let mut new_sstable = SSTable::new(sstable_path.as_str()).await?;

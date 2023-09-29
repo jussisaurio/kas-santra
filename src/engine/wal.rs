@@ -1,5 +1,5 @@
 use std::fs::{File, OpenOptions};
-use std::io::{Read, Seek, SeekFrom, Write, Result, Lines, BufReader, BufRead};
+use std::io::{BufRead, BufReader, Lines, Read, Result, Seek, SeekFrom, Write};
 
 pub struct Wal {
     file: File,
@@ -15,26 +15,32 @@ impl Wal {
             .open(path)
             .unwrap();
 
-        Wal { file, path: path.to_string() }
+        Wal {
+            file,
+            path: path.to_string(),
+        }
     }
 
-    pub fn from_path(path: &str) -> Wal {
+    pub fn from_file(path: &str) -> Wal {
         let file = OpenOptions::new()
             .read(true)
             .write(true)
+            .append(true)
             .open(path)
             .unwrap();
 
-        Wal { file, path: path.to_string() }
+        Wal {
+            file,
+            path: path.to_string(),
+        }
     }
 
     pub fn path(&self) -> String {
         self.path.clone()
     }
 
-    pub fn append(&mut self, data: &[u8]) -> Result<()> {
-        let result = self.file.write_all(data);
-        result
+    pub fn append(&mut self, line: &str) -> Result<()> {
+        writeln!(self.file, "{}", line)
     }
 
     pub fn get_line_iterator(&mut self) -> Lines<BufReader<File>> {
@@ -52,6 +58,7 @@ impl Wal {
 
     pub fn clear(&mut self) -> Result<()> {
         self.file.set_len(0)?;
+        self.file.seek(SeekFrom::Start(0))?;
         Ok(())
     }
 }

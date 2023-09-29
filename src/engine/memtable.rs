@@ -28,9 +28,8 @@ impl MemTable {
 
     pub fn delete(&mut self, key: &String, wal: &mut Wal) {
         // Log the delete operation first
-        let log_entry = format!("DELETE\t{}\n", key);
-        let bytes = log_entry.as_bytes();
-        wal.append(bytes).expect("Failed to write to WAL");
+        let log_entry = format!("DELETE\t{}", key);
+        wal.append(&log_entry).expect("Failed to write to WAL");
         let (existing_key_bytes, existing_value_bytes) = match self.store.get(key) {
             Some(Operation::Insert(value)) => (key.len(), value.len()),
             Some(Operation::Delete) => (key.len(), 0),
@@ -45,9 +44,8 @@ impl MemTable {
     /// Write data to the MemTable and log it to the Write-Ahead Log.
     pub fn set(&mut self, key: String, value: String, wal: &mut Wal) {
         // Log the write operation first
-        let log_entry = format!("INSERT\t{}\t{}\n", key, value);
-        let bytes = log_entry.as_bytes();
-        wal.append(bytes).expect("Failed to write to WAL");
+        let log_entry = format!("INSERT\t{}\t{}", key, value);
+        wal.append(&log_entry).expect("Failed to write to WAL");
 
         let (existing_key_bytes, existing_value_bytes) = match self.store.get(&key) {
             Some(Operation::Insert(existing_value)) => (key.len(), existing_value.len()),
@@ -72,19 +70,19 @@ impl MemTable {
 
         for line in wal_iterator {
             let line = line.unwrap();
-            let mut parts = line.split("\t");
-            let operation = parts.next().unwrap();
-            let key = parts.next().unwrap();
-            match operation {
-                "INSERT" => {
-                    let value = parts.next().unwrap();
+            let parts = line.split("\t").collect::<Vec<&str>>();
+            let operation = parts.get(0);
+            let key = parts.get(1);
+            let value = parts.get(2);
+            match (operation, key, value) {
+                (Some(&"INSERT"), Some(key), Some(value)) => {
                     self.store
                         .insert(key.to_string(), Operation::Insert(value.to_string()));
                 }
-                "DELETE" => {
-                    self.store.remove(key);
+                (Some(&"DELETE"), Some(key), None) => {
+                    self.store.insert(key.to_string(), Operation::Delete);
                 }
-                _ => panic!("Unknown operation {}", operation),
+                _ => panic!("Unknown operation"),
             }
         }
     }

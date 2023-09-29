@@ -73,7 +73,7 @@ async fn run_client() {
 }
 
 async fn run_server() {
-    let database = Arc::new(Database::new("data"));
+    let database = Arc::new(Database::load("data").await.unwrap());
     let port_from_env = std::env::var("PORT").unwrap_or("8080".to_string());
     let listener = TcpListener::bind(format!("127.0.0.1:{}", port_from_env))
         .await
